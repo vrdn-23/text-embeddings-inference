@@ -42,9 +42,11 @@ mod flash_modernbert;
 mod gte;
 mod mpnet;
 mod qwen2;
+mod debertav2;
 
 pub use bert::{BertConfig, BertModel, PositionEmbeddingType};
 use candle::{Result, Tensor};
+pub use debertav2::{DebertaV2Config, DebertaV2Model};
 pub use distilbert::{DistilBertConfig, DistilBertModel};
 #[allow(unused_imports)]
 pub use gte::{GTEClassificationHead, GTEConfig, GTEModel, GTEMLP};

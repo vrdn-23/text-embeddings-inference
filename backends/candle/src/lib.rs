@@ -11,7 +11,7 @@ use crate::compute_cap::{
     compatible_compute_cap, get_compile_compute_cap, get_runtime_compute_cap,
 };
 use crate::models::{
-    BertConfig, BertModel, DistilBertConfig, DistilBertModel, GTEConfig, GTEModel, JinaBertModel,
+    BertConfig, BertModel, DebertaV2Config, DebertaV2Model, DistilBertConfig, DistilBertModel, GTEConfig, GTEModel, JinaBertModel,
     JinaCodeBertModel, MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig,
     ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config,
 };
@@ -95,6 +95,8 @@ enum Config {
     Roberta(BertConfig),
     #[serde(rename(deserialize = "distilbert"))]
     DistilBert(DistilBertConfig),
+    #[serde(rename(deserialize = "deberta_v2"))]
+    DebertaV2(DebertaV2Config),
     #[serde(rename(deserialize = "nomic_bert"))]
     NomicBert(NomicConfig),
     #[allow(dead_code)]
@@ -251,7 +253,11 @@ impl CandleBackend {
                     BertModel::load_roberta(vb, &config, model_type).s()?,
                 ))
             }
-            (Config::DistilBert(config), Device::Cpu | Device::Metal(_)) => {
+            (Config::DebertaV2(config), _) => {
+                tracing::info!("Starting Deberta-V2 model on {:?}", device);
+                Ok(Box::new(DebertaV2Model::load(vb, &config, model_type).s()?))
+            }
+            (Config::DistilBert(config), _) => {
                 tracing::info!("Starting DistilBert model on {:?}", device);
                 Ok(Box::new(
                     DistilBertModel::load(vb, &config, model_type).s()?,
