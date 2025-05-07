@@ -50,7 +50,7 @@ pub type Id2Label = HashMap<u32, String>;
 pub type Label2Id = HashMap<String, u32>;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct DebertaV2Config {
+pub struct Config {
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
@@ -102,6 +102,26 @@ where
     }
 }
 
+// NOTE: Dropout is probably not needed for now since this will primarily be used
+// in inferencing. However, for training/fine-tuning it will be necessary.
+pub struct StableDropout {
+    _drop_prob: f64,
+    _count: usize,
+}
+
+impl StableDropout {
+    pub fn new(drop_prob: f64) -> Self {
+        Self {
+            _drop_prob: drop_prob,
+            _count: 0,
+        }
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        Ok(x.clone())
+    }
+}
+
 // https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L823
 pub struct DebertaV2Embeddings {
     device: Device,
@@ -109,14 +129,15 @@ pub struct DebertaV2Embeddings {
     position_embeddings: Option<Embedding>,
     token_type_embeddings: Option<Embedding>,
     layer_norm: LayerNorm,
+    dropout: StableDropout,
     position_ids: Tensor,
-    config: DebertaV2Config,
+    config: Config,
     embedding_size: usize,
     embed_proj: Option<candle_nn::Linear>,
 }
 
 impl DebertaV2Embeddings {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let device = vb.device().clone();
         let config = config.clone();
 
@@ -161,6 +182,8 @@ impl DebertaV2Embeddings {
             vb.pp("LayerNorm"),
         )?;
 
+        let dropout = StableDropout::new(config.hidden_dropout_prob);
+
         let position_ids =
             Tensor::arange(0, config.max_position_embeddings as u32, &device)?.unsqueeze(0)?;
 
@@ -169,6 +192,7 @@ impl DebertaV2Embeddings {
             position_embeddings,
             token_type_embeddings,
             layer_norm,
+            dropout,
             position_ids,
             device,
             config,
@@ -242,22 +266,22 @@ impl DebertaV2Embeddings {
             }
         }
 
-        self.layer_norm.forward(&embeddings)
+        embeddings = self.layer_norm.forward(&embeddings)?;
 
-        // if let Some(mask) = mask {
-        //     let mut mask = mask.clone();
-        //     if mask.dims() != embeddings.dims() {
-        //         if mask.dims().len() == 4 {
-        //             mask = mask.squeeze(1)?.squeeze(1)?;
-        //         }
-        //         mask = mask.unsqueeze(2)?;
-        //     }
-        //
-        //     mask = mask.to_dtype(embeddings.dtype())?;
-        //     embeddings = embeddings.broadcast_mul(&mask)?;
-        // }
+        if let Some(mask) = mask {
+            let mut mask = mask.clone();
+            if mask.dims() != embeddings.dims() {
+                if mask.dims().len() == 4 {
+                    mask = mask.squeeze(1)?.squeeze(1)?;
+                }
+                mask = mask.unsqueeze(2)?;
+            }
 
-        // self.dropout.forward(&embeddings)
+            mask = mask.to_dtype(embeddings.dtype())?;
+            embeddings = embeddings.broadcast_mul(&mask)?;
+        }
+
+        self.dropout.forward(&embeddings)
     }
 }
 
@@ -287,13 +311,15 @@ impl XSoftmax {
 
 // https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L605
 pub struct DebertaV2DisentangledSelfAttention {
-    config: DebertaV2Config,
+    config: Config,
     num_attention_heads: usize,
     query_proj: candle_nn::Linear,
     key_proj: candle_nn::Linear,
     value_proj: candle_nn::Linear,
+    dropout: StableDropout,
     device: Device,
     relative_attention: bool,
+    pos_dropout: Option<StableDropout>,
     position_buckets: isize,
     max_relative_positions: isize,
     pos_ebd_size: isize,
@@ -303,7 +329,7 @@ pub struct DebertaV2DisentangledSelfAttention {
 }
 
 impl DebertaV2DisentangledSelfAttention {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let config = config.clone();
         let vb = vb.clone();
 
@@ -332,6 +358,7 @@ impl DebertaV2DisentangledSelfAttention {
 
         let mut pos_ebd_size: isize = 0;
         let position_buckets = config.position_buckets.unwrap_or(-1);
+        let mut pos_dropout: Option<StableDropout> = None;
         let mut pos_key_proj: Option<candle_nn::Linear> = None;
         let mut pos_query_proj: Option<candle_nn::Linear> = None;
 
@@ -344,6 +371,7 @@ impl DebertaV2DisentangledSelfAttention {
                 pos_ebd_size = position_buckets
             }
 
+            pos_dropout = Some(StableDropout::new(config.hidden_dropout_prob));
 
             if !share_att_key {
                 if config.pos_att_type.iter().any(|s| s == "c2p") {
@@ -363,6 +391,7 @@ impl DebertaV2DisentangledSelfAttention {
             }
         }
 
+        let dropout = StableDropout::new(config.attention_probs_dropout_prob);
         let device = vb.device().clone();
 
         Ok(Self {
@@ -371,8 +400,10 @@ impl DebertaV2DisentangledSelfAttention {
             query_proj,
             key_proj,
             value_proj,
+            dropout,
             device,
             relative_attention,
+            pos_dropout,
             position_buckets,
             max_relative_positions,
             pos_ebd_size,
@@ -426,6 +457,7 @@ impl DebertaV2DisentangledSelfAttention {
         if self.relative_attention {
             if let Some(rel_embeddings) = rel_embeddings {
                 let rel_embeddings = self
+                    .pos_dropout
                     .as_ref()
                     .context("relative_attention requires pos_dropout")?
                     .forward(rel_embeddings)?;
@@ -453,6 +485,7 @@ impl DebertaV2DisentangledSelfAttention {
         let mut attention_probs =
             XSoftmax::apply(&attention_scores, attention_mask, D::Minus1, &self.device)?;
 
+        attention_probs = self.dropout.forward(&attention_probs)?;
 
         let mut context_layer = attention_probs
             .reshape((
@@ -674,7 +707,7 @@ pub struct DebertaV2Attention {
 }
 
 impl DebertaV2Attention {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let dsa = DebertaV2DisentangledSelfAttention::load(vb.pp("attention.self"), config)?;
         let output = DebertaV2SelfOutput::load(vb.pp("attention.output"), config)?;
         Ok(Self { dsa, output })
@@ -705,24 +738,28 @@ impl DebertaV2Attention {
 pub struct DebertaV2SelfOutput {
     dense: candle_nn::Linear,
     layer_norm: LayerNorm,
+    dropout: StableDropout,
 }
 
 impl DebertaV2SelfOutput {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let dense = candle_nn::linear(config.hidden_size, config.hidden_size, vb.pp("dense"))?;
         let layer_norm = candle_nn::layer_norm(
             config.hidden_size,
             config.layer_norm_eps,
             vb.pp("LayerNorm"),
         )?;
+        let dropout = StableDropout::new(config.hidden_dropout_prob);
         Ok(Self {
             dense,
             layer_norm,
+            dropout,
         })
     }
 
     pub fn forward(&self, hidden_states: &Tensor, input_tensor: &Tensor) -> Result<Tensor> {
         let mut hidden_states = self.dense.forward(hidden_states)?;
+        hidden_states = self.dropout.forward(&hidden_states)?;
         self.layer_norm
             .forward(&hidden_states.broadcast_add(input_tensor)?)
     }
@@ -735,7 +772,7 @@ pub struct DebertaV2Intermediate {
 }
 
 impl DebertaV2Intermediate {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let dense = candle_nn::linear(
             config.hidden_size,
             config.intermediate_size,
@@ -758,10 +795,11 @@ impl DebertaV2Intermediate {
 pub struct DebertaV2Output {
     dense: candle_nn::Linear,
     layer_norm: LayerNorm,
+    dropout: StableDropout,
 }
 
 impl DebertaV2Output {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let dense = candle_nn::linear(
             config.intermediate_size,
             config.hidden_size,
@@ -772,14 +810,17 @@ impl DebertaV2Output {
             config.layer_norm_eps,
             vb.pp("output.LayerNorm"),
         )?;
+        let dropout = StableDropout::new(config.hidden_dropout_prob);
         Ok(Self {
             dense,
             layer_norm,
+            dropout,
         })
     }
 
     pub fn forward(&self, hidden_states: &Tensor, input_tensor: &Tensor) -> Result<Tensor> {
         let mut hidden_states = self.dense.forward(hidden_states)?;
+        hidden_states = self.dropout.forward(&hidden_states)?;
         hidden_states = {
             let to_norm = hidden_states.broadcast_add(input_tensor)?;
             self.layer_norm.forward(&to_norm)?
@@ -796,7 +837,7 @@ pub struct DebertaV2Layer {
 }
 
 impl DebertaV2Layer {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let attention = DebertaV2Attention::load(vb.clone(), config)?;
         let intermediate = DebertaV2Intermediate::load(vb.clone(), config)?;
         let output = DebertaV2Output::load(vb.clone(), config)?;
@@ -839,11 +880,12 @@ pub struct ConvLayer {
     _conv_act: String,
     _conv: Conv1d,
     _layer_norm: LayerNorm,
-    _config: DebertaV2Config,
+    _dropout: StableDropout,
+    _config: Config,
 }
 
 impl ConvLayer {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let config = config.clone();
         let kernel_size = config.conv_kernel_size.unwrap_or(3);
         let groups = config.conv_groups.unwrap_or(1);
@@ -869,11 +911,13 @@ impl ConvLayer {
             vb.pp("LayerNorm"),
         )?;
 
+        let dropout = StableDropout::new(config.hidden_dropout_prob);
 
         Ok(Self {
             _conv_act: conv_act,
             _conv: conv,
             _layer_norm: layer_norm,
+            _dropout: dropout,
             _config: config,
         })
     }
@@ -902,7 +946,7 @@ pub struct DebertaV2Encoder {
 }
 
 impl DebertaV2Encoder {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let layer = (0..config.num_hidden_layers)
             .map(|index| DebertaV2Layer::load(vb.pp(format!("layer.{index}")), config))
             .collect::<Result<Vec<_>>>()?;
@@ -1101,7 +1145,7 @@ pub struct DebertaV2Model {
 }
 
 impl DebertaV2Model {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let vb = vb.clone();
         let embeddings = DebertaV2Embeddings::load(vb.pp("embeddings"), config)?;
         let encoder = DebertaV2Encoder::load(vb.pp("encoder"), config)?;
@@ -1176,7 +1220,7 @@ pub struct DebertaV2NERModel {
     classifier: candle_nn::Linear,
 }
 
-fn id2label_len(config: &DebertaV2Config, id2label: Option<HashMap<u32, String>>) -> Result<usize> {
+fn id2label_len(config: &Config, id2label: Option<HashMap<u32, String>>) -> Result<usize> {
     let id2label_len = match (&config.id2label, id2label) {
         (None, None) => bail!("Id2Label is either not present in the model configuration or not passed into DebertaV2NERModel::load as a parameter"),
         (None, Some(id2label_p)) => id2label_p.len(),
@@ -1193,7 +1237,7 @@ fn id2label_len(config: &DebertaV2Config, id2label: Option<HashMap<u32, String>>
 }
 
 impl DebertaV2NERModel {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config, id2label: Option<Id2Label>) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config, id2label: Option<Id2Label>) -> Result<Self> {
         let id2label_len = id2label_len(config, id2label)?;
 
         let deberta = DebertaV2Model::load(vb.clone(), config)?;
@@ -1229,21 +1273,27 @@ impl DebertaV2NERModel {
 pub struct DebertaV2SeqClassificationModel {
     pub device: Device,
     deberta: DebertaV2Model,
+    dropout: StableDropout,
     pooler: DebertaV2ContextPooler,
     classifier: candle_nn::Linear,
 }
 
 impl DebertaV2SeqClassificationModel {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config, id2label: Option<Id2Label>) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config, id2label: Option<Id2Label>) -> Result<Self> {
         let id2label_len = id2label_len(config, id2label)?;
         let deberta = DebertaV2Model::load(vb.clone(), config)?;
         let pooler = DebertaV2ContextPooler::load(vb.clone(), config)?;
         let output_dim = pooler.output_dim()?;
         let classifier = candle_nn::linear(output_dim, id2label_len, vb.root().pp("classifier"))?;
+        let dropout = match config.cls_dropout {
+            Some(cls_dropout) => StableDropout::new(cls_dropout),
+            None => StableDropout::new(config.hidden_dropout_prob),
+        };
 
         Ok(Self {
             device: vb.device().clone(),
             deberta,
+            dropout,
             pooler,
             classifier,
         })
@@ -1259,18 +1309,20 @@ impl DebertaV2SeqClassificationModel {
             .deberta
             .forward(input_ids, token_type_ids, attention_mask)?;
         let pooled_output = self.pooler.forward(&encoder_layer)?;
+        let pooled_output = self.dropout.forward(&pooled_output)?;
         self.classifier.forward(&pooled_output)
     }
 }
 
 pub struct DebertaV2ContextPooler {
     dense: candle_nn::Linear,
-    config: DebertaV2Config,
+    dropout: StableDropout,
+    config: Config,
 }
 
 // https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L49
 impl DebertaV2ContextPooler {
-    pub fn load(vb: VarBuilder, config: &DebertaV2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let pooler_hidden_size = config
             .pooler_hidden_size
             .context("config.pooler_hidden_size is required for DebertaV2ContextPooler")?;
@@ -1285,15 +1337,18 @@ impl DebertaV2ContextPooler {
             vb.root().pp("pooler.dense"),
         )?;
 
+        let dropout = StableDropout::new(pooler_dropout);
 
         Ok(Self {
             dense,
+            dropout,
             config: config.clone(),
         })
     }
 
     pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let context_token = hidden_states.narrow(1, 0, 1)?.squeeze(1)?;
+        let context_token = self.dropout.forward(&context_token)?;
 
         let pooled_output = self.dense.forward(&context_token.contiguous()?)?;
         let pooler_hidden_act = self
