@@ -44,9 +44,9 @@ pub(crate) fn flash_attn_varlen(
             candle::bail!("Flash attention v1 does not support attention windowing");
         }
 
-        #[cfg(feature = "flash-attn-v1")]
+        #[cfg(feature = "flash-attn")]
         {
-            use candle_flash_attn_v1::flash_attn_varlen;
+            use candle_flash_attn::flash_attn_varlen;
             return flash_attn_varlen(
                 q,
                 k,

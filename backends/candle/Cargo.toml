@@ -13,10 +13,10 @@ candle = { workspace = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 candle-flash-attn = { workspace = true, optional = true}
-candle-flash-attn-v1 = { workspace = true, optional = true }
-candle-cublaslt = { workspace = true, optional = true }
 candle-layer-norm = { workspace = true, optional = true }
 candle-rotary = { workspace = true, optional = true }
+cudarc = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
 nohash-hasher = { workspace = true }
 text-embeddings-backend-core = { path = "../core" }
 tracing = { workspace = true }
@@ -40,7 +40,6 @@ anyhow = { version = "1", features = ["backtrace"] }
 [features]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]
 metal = ["candle/metal", "candle-nn/metal"]
-mkl = ["dep:intel-mkl-src", "candle/_mkl"]
-cuda = ["candle/_cuda", "candle-nn/_cuda", "dep:candle-cublaslt", "dep:candle-layer-norm", "dep:candle-rotary"]
-flash-attn-v1 = ["dep:candle-flash-attn-v1", "cuda"]
+mkl = ["dep:intel-mkl-src", "candle/mkl"]
+cuda = ["candle/cuda", "candle-nn/cuda", "dep:candle-layer-norm", "dep:candle-rotary", "dep:cudarc", "dep:half"]
 flash-attn = ["dep:candle-flash-attn", "cuda"]
