@@ -1,7 +1,6 @@
 use anyhow::Result;
 use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
 use hf_hub::{Repo, RepoType};
-use insta::internals::YamlMatcher;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::ops::Deref;
@@ -265,15 +264,6 @@ fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBuf, Api
     }
 
     Ok(config_path.parent().unwrap().to_path_buf())
-}
-
-#[allow(unused)]
-pub(crate) fn relative_matcher() -> YamlMatcher<SnapshotScores> {
-    YamlMatcher::new()
-}
-
-pub fn cosine_matcher() -> YamlMatcher<SnapshotEmbeddings> {
-    YamlMatcher::new()
 }
 
 pub fn load_tokenizer(model_root: &Path) -> Result<Tokenizer> {

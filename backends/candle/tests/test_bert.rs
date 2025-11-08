@@ -2,7 +2,7 @@ mod common;
 
 use crate::common::{sort_embeddings, SnapshotEmbeddings, SnapshotScores};
 use anyhow::Result;
-use common::{batch, cosine_matcher, download_artifacts, load_tokenizer, relative_matcher};
+use common::{batch, download_artifacts, load_tokenizer};
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, ModelType, Pool};
 
@@ -29,11 +29,14 @@ fn test_bert() -> Result<()> {
         vec![],
     );
 
-    let matcher = cosine_matcher();
-
     let (pooled_embeddings, _) = sort_embeddings(backend.embed(input_batch)?);
     let embeddings_batch = SnapshotEmbeddings::from(pooled_embeddings);
-    insta::assert_yaml_snapshot!("bert_batch", embeddings_batch, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_batch", embeddings_batch);
+    });
 
     let input_single = batch(
         vec![tokenizer.encode("What is Deep Learning?", true).unwrap()],
@@ -44,7 +47,11 @@ fn test_bert() -> Result<()> {
     let (pooled_embeddings, _) = sort_embeddings(backend.embed(input_single)?);
     let embeddings_single = SnapshotEmbeddings::from(pooled_embeddings);
 
-    insta::assert_yaml_snapshot!("bert_single", embeddings_single, &matcher);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_single", embeddings_single);
+    });
     assert_eq!(embeddings_batch[0], embeddings_single[0]);
     assert_eq!(embeddings_batch[2], embeddings_single[0]);
 
@@ -93,14 +100,22 @@ fn test_bert_pooled_raw() -> Result<()> {
         [1, 4, 5].to_vec(),
     );
 
-    let matcher = cosine_matcher();
-
     let (pooled_embeddings, raw_embeddings) = sort_embeddings(backend.embed(input_batch)?);
     let pooled_embeddings_batch = SnapshotEmbeddings::from(pooled_embeddings);
-    insta::assert_yaml_snapshot!("bert_batch_pooled", pooled_embeddings_batch, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_batch_pooled", pooled_embeddings_batch);
+    });
 
     let raw_embeddings_batch = SnapshotEmbeddings::from(raw_embeddings);
-    insta::assert_yaml_snapshot!("bert_batch_raw", raw_embeddings_batch, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_batch_raw", raw_embeddings_batch);
+    });
 
     // Check that the first token of each raw embeddings member is the same as the cls pooling ones
     assert_eq!(pooled_embeddings_batch[0], raw_embeddings_batch[0]);
@@ -116,7 +131,12 @@ fn test_bert_pooled_raw() -> Result<()> {
 
     let (pooled_embeddings, _) = sort_embeddings(backend.embed(input_single)?);
     let embeddings_single = SnapshotEmbeddings::from(pooled_embeddings);
-    insta::assert_yaml_snapshot!("bert_single_pooled", embeddings_single, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_single_pooled", embeddings_single);
+    });
 
     assert_eq!(pooled_embeddings_batch[0], embeddings_single[0]);
     assert_eq!(pooled_embeddings_batch[2], embeddings_single[0]);
@@ -129,7 +149,12 @@ fn test_bert_pooled_raw() -> Result<()> {
 
     let (_, raw_embeddings) = sort_embeddings(backend.embed(input_single)?);
     let embeddings_single = SnapshotEmbeddings::from(raw_embeddings);
-    insta::assert_yaml_snapshot!("bert_single_raw", embeddings_single, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_single_raw", embeddings_single);
+    });
 
     assert_eq!(raw_embeddings_batch[0], embeddings_single[0]);
     assert_eq!(raw_embeddings_batch[15], embeddings_single[0]);
@@ -163,15 +188,18 @@ fn test_emotions() -> Result<()> {
         vec![],
     );
 
-    let matcher = relative_matcher();
-
     let predictions: Vec<Vec<f32>> = backend
         .predict(input_batch)?
         .into_iter()
         .map(|(_, v)| v)
         .collect();
     let predictions_batch = SnapshotScores::from(predictions);
-    insta::assert_yaml_snapshot!("emotions_batch", predictions_batch, &matcher);
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("emotions_batch", predictions_batch);
+    });
 
     let input_single = batch(
         vec![tokenizer.encode("I like you.", true).unwrap()],
@@ -186,7 +214,12 @@ fn test_emotions() -> Result<()> {
         .collect();
     let predictions_single = SnapshotScores::from(predictions);
 
-    insta::assert_yaml_snapshot!("emotions_single", predictions_single, &matcher);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("emotions_single", predictions_single);
+    });
+
     assert_eq!(predictions_batch[0], predictions_single[0]);
     assert_eq!(predictions_batch[2], predictions_single[0]);
 
@@ -228,8 +261,11 @@ fn test_bert_classification() -> Result<()> {
         .collect();
     let predictions_single = SnapshotScores::from(predictions);
 
-    let matcher = relative_matcher();
-    insta::assert_yaml_snapshot!("bert_classification_single", predictions_single, &matcher);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_redaction(".**", insta::rounded_redaction(4));
+    settings.bind(|| {
+        insta::assert_yaml_snapshot!("bert_classification_single", predictions_single);
+    });
 
     Ok(())
 }
